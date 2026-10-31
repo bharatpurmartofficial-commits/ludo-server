@@ -11,7 +11,7 @@ const io = new Server(server, {
 });
 
 // AAPKI WORDPRESS WEBSITE KA LINK
-const WP_SITE_URL = "https://yourwebsite.com"; // <-- Apni website ka link yahan daalein (Bina aakhri slash ke)
+const WP_SITE_URL = "https://bharatpurmart.com"; // <-- Apni website ka link yahan daalein (Bina aakhri slash ke)
 const SECRET_KEY = "MERA_SUPER_SECRET_KEY_12345"; // Jo WordPress Plugin me rakhi thi
 
 let waitingPlayers = [];
