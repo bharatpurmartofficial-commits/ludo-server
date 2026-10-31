@@ -6,80 +6,85 @@ const axios = require('axios');
 const app = express();
 const server = http.createServer(app);
 
-const io = new Server(server, {
-    cors: { origin: "*" }
-});
+const io = new Server(server, { cors: { origin: "*" } });
 
-// AAPKI WORDPRESS WEBSITE KA LINK
-const WP_SITE_URL = "https://bharatpurmart.com"; // <-- Apni website ka link yahan daalein (Bina aakhri slash ke)
-const SECRET_KEY = "MERA_SUPER_SECRET_KEY_12345"; // Jo WordPress Plugin me rakhi thi
+const WP_SITE_URL = "https://bharatpurmart.com";
+const SECRET_KEY = "MERA_SUPER_SECRET_KEY_12345";
 
-let waitingPlayers = [];
+// Matchmaking queues partitioned by: mode_players_fee
+let queues = {};
 let activeRooms = {};
 
-app.get('/', (req, res) => {
-    res.send("🎲 Ludo Game Server Successfully LIVE hai!");
-});
-
 io.on('connection', (socket) => {
-    console.log('Player connect hua: ' + socket.id);
 
-    socket.on('request_join', async (data) => {
-        const { user_id, username } = data;
+    socket.on('find_match', async (data) => {
+        const { user_id, displayName, playersCount, entryFee, mode } = data;
+        const queueKey = `${mode}_${playersCount}_${entryFee}`;
 
         try {
-            // WordPress se points deduct karein
-            const apiRes = await axios.post(`${WP_SITE_URL}/wp-json/ludo/v1/deduct`, 
-                { user_id: user_id },
-                { headers: { 'X-Secret': SECRET_KEY } }
-            );
+            // Deduct Points
+            const res = await axios.post(`${WP_SITE_URL}/wp-json/ludo/v1/deduct-tier`, {
+                user_id: user_id,
+                fee: entryFee
+            }, { headers: { 'X-Secret': SECRET_KEY } });
 
-            if (apiRes.data.success) {
+            if (res.data.success) {
                 socket.user_id = user_id;
-                socket.username = username;
+                socket.displayName = displayName;
+                socket.emit('points_deducted', { new_balance: res.data.new_balance });
 
-                waitingPlayers.push(socket);
-                socket.emit('status_update', 'Points kat gaye! Dusre player ka wait kar rahe hain...');
+                if (!queues[queueKey]) queues[queueKey] = [];
+                queues[queueKey].push(socket);
 
-                if (waitingPlayers.length >= 2) {
-                    let p1 = waitingPlayers.shift();
-                    let p2 = waitingPlayers.shift();
-
-                    let roomId = "room_" + Date.now();
-                    p1.join(roomId);
-                    p2.join(roomId);
+                // Start game if required players reached
+                if (queues[queueKey].length >= playersCount) {
+                    const matchPlayers = queues[queueKey].splice(0, playersCount);
+                    const roomId = "room_" + Date.now();
 
                     activeRooms[roomId] = {
-                        players: [p1, p2],
-                        turn: 0
+                        roomId: roomId,
+                        players: matchPlayers.map(p => ({ id: p.id, user_id: p.user_id, name: p.displayName })),
+                        turnIndex: 0,
+                        entryFee: entryFee,
+                        playersCount: playersCount
                     };
 
-                    io.to(roomId).emit('match_started', {
+                    matchPlayers.forEach(p => p.join(roomId));
+
+                    io.to(roomId).emit('match_ready', {
                         roomId: roomId,
-                        players: [p1.username, p2.username],
-                        currentTurn: p1.username
+                        currentTurnName: matchPlayers[0].displayName,
+                        currentTurnId: matchPlayers[0].user_id
                     });
                 }
             }
         } catch (err) {
-            socket.emit('status_update', 'Balance kam hai ya connection fail!');
+            socket.emit('error_alert', 'Points deduction fail ya insufficient balance!');
         }
     });
 
-    socket.on('roll_dice', (roomId) => {
-        let diceNumber = Math.floor(Math.random() * 6) + 1;
-        io.to(roomId).emit('dice_result', {
-            player: socket.username,
-            number: diceNumber
+    // Authoritative Dice Roll
+    socket.on('request_roll', (data) => {
+        const room = activeRooms[data.roomId];
+        if (!room) return;
+
+        const diceValue = Math.floor(Math.random() * 6) + 1;
+        room.turnIndex = (room.turnIndex + 1) % room.players.length;
+        const nextPlayer = room.players[room.turnIndex];
+
+        io.to(data.roomId).emit('dice_update', {
+            value: diceValue,
+            nextTurnName: nextPlayer.name,
+            nextTurnId: nextPlayer.user_id
         });
     });
 
     socket.on('disconnect', () => {
-        waitingPlayers = waitingPlayers.filter(p => p.id !== socket.id);
+        for (let q in queues) {
+            queues[q] = queues[q].filter(s => s.id !== socket.id);
+        }
     });
 });
 
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-});
+const PORT = process.env.PORT || 10000;
+server.listen(PORT, () => console.log(`Pro Ludo Engine running on port ${PORT}`));
