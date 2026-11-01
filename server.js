@@ -8,11 +8,12 @@ const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 
 const WP_SITE_URL = "https://bharatpurmart.com";
-const SECRET_KEY = "MERA_SUPER_SECRET_KEY_12345"; // Keep identical to WP
+const SECRET_KEY = "MERA_SUPER_SECRET_KEY_Param#108Martgame@live"; // Keep identical to WP
 
 const BOT_NAMES = [
     "Rahul_Sharma", "Pooja_99", "Vikram_RJ", "Amit_Verma", 
     "Neha_Patel", "Deepak_Kumar", "Suresh_Meena", "Anjali_Singh",
+    "Rajendra", "Deepali", "jaat_boy", "amar_pratap",
     "Manish_Yadav", "Kavita_Rathore", "Sachin_Gupta", "Ritu_Choudhary"
 ];
 
