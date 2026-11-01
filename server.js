@@ -17,6 +17,7 @@ const BOT_NAMES = [
     "Manish_Yadav", "Kavita_Rathore", "Sachin_Gupta", "Ritu_Choudhary"
 ];
 
+// 8 Universal Safe Stars
 const SAFE_STAR_INDICES = [0, 8, 13, 21, 26, 34, 39, 47];
 const START_INDEX = { red: 0, green: 13, yellow: 26, blue: 39 };
 
@@ -29,7 +30,7 @@ app.get('/', (req, res) => res.send("🎲 Ludo King Engine LIVE"));
 
 io.on('connection', (socket) => {
 
-    // 1. Quick Matchmaking
+    // Quick Matchmaking
     socket.on('find_match', async (data) => {
         const { user_id, displayName, playersCount, entryFee, mode } = data;
         const queueKey = `${mode}_${playersCount}_${entryFee}`;
@@ -78,7 +79,7 @@ io.on('connection', (socket) => {
         }
     });
 
-    // 2. Create Private Room
+    // Private Rooms
     socket.on('create_private_room', async (data) => {
         const { user_id, displayName, playersCount, entryFee, roomCode } = data;
         try {
@@ -104,7 +105,6 @@ io.on('connection', (socket) => {
         }
     });
 
-    // 3. Join Private Room
     socket.on('join_private_room', async (data) => {
         const { user_id, displayName, roomCode } = data;
         const room = privateRooms[roomCode];
@@ -142,17 +142,22 @@ io.on('connection', (socket) => {
         }
     });
 
-    // Start Match
+    // Start Match: Player is ALWAYS at Bottom (Blue), Opponents at Top
     function startMatch(playersList, count, entryFee) {
         const roomId = "room_" + Date.now();
 
+        // PERSPECTIVE RULES:
+        // Blue = Bottom-Left (User)
+        // Green = Top-Right (Opponent)
+        // Red = Top-Left (Opponent)
+        // Yellow = Bottom-Right
         let activeColors = [];
         if (count == 2) {
-            activeColors = ['red', 'yellow'];
+            activeColors = ['blue', 'green']; // User Bottom-Left (Blue), Opponent Top-Right (Green)
         } else if (count == 3) {
-            activeColors = ['red', 'green', 'yellow'];
+            activeColors = ['blue', 'green', 'red']; // User at Bottom, both opponents at Top
         } else {
-            activeColors = ['red', 'green', 'yellow', 'blue'];
+            activeColors = ['blue', 'green', 'red', 'yellow'];
         }
 
         const roomPawns = {};
@@ -172,6 +177,8 @@ io.on('connection', (socket) => {
             pawns: roomPawns,
             activeColors: activeColors,
             turnIndex: 0,
+            hasRolled: false, // Strict Dice Lock per turn
+            consecutiveSixes: 0,
             lastDice: 0,
             entryFee: entryFee,
             playersCount: count
@@ -197,8 +204,18 @@ io.on('connection', (socket) => {
         }
     }
 
-    // 4. Dice Roll Handler
+    // Strict Anti-Cheat Dice Roll Handler
     socket.on('request_roll', (data) => {
+        const room = activeRooms[data.roomId];
+        if (!room) return;
+
+        const currentTurnPlayer = room.players[room.turnIndex];
+
+        // Security check: Only current turn player can roll & ONLY ONCE per turn
+        if (currentTurnPlayer.user_id !== socket.user_id) return;
+        if (room.hasRolled) return; // REJECT MULTIPLE ROLLS!
+
+        room.hasRolled = true; // Lock dice immediately
         handleDiceRoll(data.roomId, socket.user_id);
     });
 
@@ -210,6 +227,28 @@ io.on('connection', (socket) => {
         room.lastDice = diceValue;
         const currentTurnPlayer = room.players[room.turnIndex];
 
+        // 3 Consecutive Sixes Rule
+        if (diceValue === 6) {
+            room.consecutiveSixes++;
+            if (room.consecutiveSixes >= 3) {
+                // Forfeit turn on 3 sixes
+                room.consecutiveSixes = 0;
+                room.hasRolled = false;
+                room.turnIndex = (room.turnIndex + 1) % room.players.length;
+                const nextPlayer = room.players[room.turnIndex];
+                io.to(roomId).emit('pawn_moved', {
+                    color: 'none',
+                    notice: '3 Sixes in a row! Turn forfeited.',
+                    nextTurnColor: nextPlayer.color,
+                    nextTurnName: nextPlayer.name
+                });
+                if (nextPlayer.isBot) triggerBotTurn(roomId);
+                return;
+            }
+        } else {
+            room.consecutiveSixes = 0;
+        }
+
         io.to(roomId).emit('dice_update', {
             value: diceValue,
             currentTurnColor: currentTurnPlayer.color,
@@ -217,7 +256,6 @@ io.on('connection', (socket) => {
             nextTurnId: currentTurnPlayer.user_id
         });
 
-        // Bot Turn Trigger
         if (currentTurnPlayer.isBot) {
             setTimeout(() => {
                 handleBotMove(roomId, currentTurnPlayer.color, diceValue);
@@ -225,11 +263,14 @@ io.on('connection', (socket) => {
         }
     }
 
-    // 5. Pawn Movement Handler
+    // Pawn Movement Handler
     socket.on('move_pawn', (data) => {
         const { roomId, color, pawnIndex, diceValue } = data;
         const room = activeRooms[roomId];
         if (!room) return;
+
+        // Unlock dice lock for next roll/turn
+        room.hasRolled = false;
 
         let pawn = room.pawns[color][pawnIndex];
         if (pawn.pos === -1) {
@@ -238,12 +279,14 @@ io.on('connection', (socket) => {
             pawn.pos += diceValue;
         }
 
+        // Star Safe Check & Kill Detection
         let killed = false;
         let killedColor = null;
         let killedIndex = null;
 
         if (pawn.pos < 51) {
             let globalCell = (START_INDEX[color] + pawn.pos) % 52;
+            // Agar cell Safe Star me nahi hai, tabhi kill hoga
             if (!SAFE_STAR_INDICES.includes(globalCell)) {
                 room.activeColors.forEach(oppColor => {
                     if (oppColor !== color) {
@@ -251,7 +294,7 @@ io.on('connection', (socket) => {
                             if (oppPawn.pos >= 0 && oppPawn.pos < 51) {
                                 let oppGlobalCell = (START_INDEX[oppColor] + oppPawn.pos) % 52;
                                 if (oppGlobalCell === globalCell) {
-                                    oppPawn.pos = -1;
+                                    oppPawn.pos = -1; // Send to base
                                     killed = true;
                                     killedColor = oppColor;
                                     killedIndex = oIdx;
@@ -263,6 +306,7 @@ io.on('connection', (socket) => {
             }
         }
 
+        // Extra Turn on 6 or Kill
         let getsExtraTurn = (diceValue === 6 || killed);
         if (!getsExtraTurn) {
             room.turnIndex = (room.turnIndex + 1) % room.players.length;
@@ -286,12 +330,14 @@ io.on('connection', (socket) => {
         }
     });
 
-    // 6. Skip Turn (FIXED BUG: data.roomId correctly passed)
+    // Skip Turn
     socket.on('skip_turn', (data) => {
         const roomId = data.roomId;
         const room = activeRooms[roomId];
         if (!room) return;
 
+        room.hasRolled = false; // Reset lock
+        room.consecutiveSixes = 0;
         room.turnIndex = (room.turnIndex + 1) % room.players.length;
         const nextPlayer = room.players[room.turnIndex];
 
@@ -301,7 +347,6 @@ io.on('connection', (socket) => {
             nextTurnName: nextPlayer.name
         });
 
-        // Trigger bot if next player is bot
         if (nextPlayer.isBot) {
             triggerBotTurn(roomId);
         }
@@ -311,6 +356,7 @@ io.on('connection', (socket) => {
         setTimeout(() => {
             const room = activeRooms[roomId];
             if (room && room.players[room.turnIndex].isBot) {
+                room.hasRolled = true;
                 handleDiceRoll(roomId, 0);
             }
         }, 1200);
@@ -319,6 +365,8 @@ io.on('connection', (socket) => {
     function handleBotMove(roomId, botColor, dice) {
         const room = activeRooms[roomId];
         if (!room) return;
+
+        room.hasRolled = false;
 
         let moveIndex = -1;
         room.pawns[botColor].forEach((p, idx) => {
@@ -331,7 +379,32 @@ io.on('connection', (socket) => {
             let pawn = room.pawns[botColor][moveIndex];
             pawn.pos = (pawn.pos === -1) ? 0 : pawn.pos + dice;
 
-            let getsExtra = (dice === 6);
+            // Kill detection for bot
+            let killed = false;
+            let killedColor = null;
+            let killedIndex = null;
+            if (pawn.pos < 51) {
+                let globalCell = (START_INDEX[botColor] + pawn.pos) % 52;
+                if (!SAFE_STAR_INDICES.includes(globalCell)) {
+                    room.activeColors.forEach(oppColor => {
+                        if (oppColor !== botColor) {
+                            room.pawns[oppColor].forEach((oppPawn, oIdx) => {
+                                if (oppPawn.pos >= 0 && oppPawn.pos < 51) {
+                                    let oppGlobalCell = (START_INDEX[oppColor] + oppPawn.pos) % 52;
+                                    if (oppGlobalCell === globalCell) {
+                                        oppPawn.pos = -1;
+                                        killed = true;
+                                        killedColor = oppColor;
+                                        killedIndex = oIdx;
+                                    }
+                                }
+                            });
+                        }
+                    });
+                }
+            }
+
+            let getsExtra = (dice === 6 || killed);
             if (!getsExtra) {
                 room.turnIndex = (room.turnIndex + 1) % room.players.length;
             }
@@ -341,13 +414,15 @@ io.on('connection', (socket) => {
                 color: botColor,
                 pawnIndex: moveIndex,
                 newPos: pawn.pos,
+                killedOpponent: killed,
+                killedColor: killedColor,
+                killedIndex: killedIndex,
                 nextTurnColor: nextP.color,
                 nextTurnName: nextP.name
             });
 
             if (nextP.isBot) triggerBotTurn(roomId);
         } else {
-            // Bot has no moves, pass turn to user
             room.turnIndex = (room.turnIndex + 1) % room.players.length;
             const nextP = room.players[room.turnIndex];
             io.to(roomId).emit('pawn_moved', {
