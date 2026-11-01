@@ -30,7 +30,7 @@ app.get('/', (req, res) => res.send("🎲 Ludo King Engine LIVE"));
 
 io.on('connection', (socket) => {
 
-    // Quick Matchmaking
+    // 1. Quick Matchmaking
     socket.on('find_match', async (data) => {
         const { user_id, displayName, playersCount, entryFee, mode } = data;
         const queueKey = `${mode}_${playersCount}_${entryFee}`;
@@ -79,7 +79,7 @@ io.on('connection', (socket) => {
         }
     });
 
-    // Private Rooms
+    // 2. Create Private Room
     socket.on('create_private_room', async (data) => {
         const { user_id, displayName, playersCount, entryFee, roomCode } = data;
         try {
@@ -105,6 +105,7 @@ io.on('connection', (socket) => {
         }
     });
 
+    // 3. Join Private Room
     socket.on('join_private_room', async (data) => {
         const { user_id, displayName, roomCode } = data;
         const room = privateRooms[roomCode];
@@ -146,16 +147,11 @@ io.on('connection', (socket) => {
     function startMatch(playersList, count, entryFee) {
         const roomId = "room_" + Date.now();
 
-        // PERSPECTIVE RULES:
-        // Blue = Bottom-Left (User)
-        // Green = Top-Right (Opponent)
-        // Red = Top-Left (Opponent)
-        // Yellow = Bottom-Right
         let activeColors = [];
         if (count == 2) {
-            activeColors = ['blue', 'green']; // User Bottom-Left (Blue), Opponent Top-Right (Green)
+            activeColors = ['blue', 'green'];
         } else if (count == 3) {
-            activeColors = ['blue', 'green', 'red']; // User at Bottom, both opponents at Top
+            activeColors = ['blue', 'green', 'red'];
         } else {
             activeColors = ['blue', 'green', 'red', 'yellow'];
         }
@@ -177,7 +173,7 @@ io.on('connection', (socket) => {
             pawns: roomPawns,
             activeColors: activeColors,
             turnIndex: 0,
-            hasRolled: false, // Strict Dice Lock per turn
+            hasRolled: false,
             consecutiveSixes: 0,
             lastDice: 0,
             entryFee: entryFee,
@@ -204,18 +200,17 @@ io.on('connection', (socket) => {
         }
     }
 
-    // Strict Anti-Cheat Dice Roll Handler
+    // 4. Strict Anti-Cheat Dice Roll Handler
     socket.on('request_roll', (data) => {
         const room = activeRooms[data.roomId];
         if (!room) return;
 
         const currentTurnPlayer = room.players[room.turnIndex];
 
-        // Security check: Only current turn player can roll & ONLY ONCE per turn
         if (currentTurnPlayer.user_id !== socket.user_id) return;
-        if (room.hasRolled) return; // REJECT MULTIPLE ROLLS!
+        if (room.hasRolled) return;
 
-        room.hasRolled = true; // Lock dice immediately
+        room.hasRolled = true;
         handleDiceRoll(data.roomId, socket.user_id);
     });
 
@@ -231,7 +226,6 @@ io.on('connection', (socket) => {
         if (diceValue === 6) {
             room.consecutiveSixes++;
             if (room.consecutiveSixes >= 3) {
-                // Forfeit turn on 3 sixes
                 room.consecutiveSixes = 0;
                 room.hasRolled = false;
                 room.turnIndex = (room.turnIndex + 1) % room.players.length;
@@ -263,16 +257,21 @@ io.on('connection', (socket) => {
         }
     }
 
-    // Pawn Movement Handler
+    // 5. Pawn Movement Handler (With Overshoot & Safe Star Check)
     socket.on('move_pawn', (data) => {
         const { roomId, color, pawnIndex, diceValue } = data;
         const room = activeRooms[roomId];
         if (!room) return;
 
-        // Unlock dice lock for next roll/turn
         room.hasRolled = false;
 
         let pawn = room.pawns[color][pawnIndex];
+
+        // Overshoot Lock: Goti 56 se aage nahi ja sakti!
+        if (pawn.pos !== -1 && (pawn.pos + diceValue) > 56) {
+            return;
+        }
+
         if (pawn.pos === -1) {
             pawn.pos = 0;
         } else {
@@ -286,7 +285,6 @@ io.on('connection', (socket) => {
 
         if (pawn.pos < 51) {
             let globalCell = (START_INDEX[color] + pawn.pos) % 52;
-            // Agar cell Safe Star me nahi hai, tabhi kill hoga
             if (!SAFE_STAR_INDICES.includes(globalCell)) {
                 room.activeColors.forEach(oppColor => {
                     if (oppColor !== color) {
@@ -294,7 +292,7 @@ io.on('connection', (socket) => {
                             if (oppPawn.pos >= 0 && oppPawn.pos < 51) {
                                 let oppGlobalCell = (START_INDEX[oppColor] + oppPawn.pos) % 52;
                                 if (oppGlobalCell === globalCell) {
-                                    oppPawn.pos = -1; // Send to base
+                                    oppPawn.pos = -1;
                                     killed = true;
                                     killedColor = oppColor;
                                     killedIndex = oIdx;
@@ -306,8 +304,10 @@ io.on('connection', (socket) => {
             }
         }
 
-        // Extra Turn on 6 or Kill
-        let getsExtraTurn = (diceValue === 6 || killed);
+        let reachedGoal = (pawn.pos === 56);
+
+        // Extra Turn on: 6 Aane Par, Goti Kaatne Par, YA Goal Pahunchne Par
+        let getsExtraTurn = (diceValue === 6 || killed || reachedGoal);
         if (!getsExtraTurn) {
             room.turnIndex = (room.turnIndex + 1) % room.players.length;
         }
@@ -330,13 +330,13 @@ io.on('connection', (socket) => {
         }
     });
 
-    // Skip Turn
+    // 6. Skip Turn
     socket.on('skip_turn', (data) => {
         const roomId = data.roomId;
         const room = activeRooms[roomId];
         if (!room) return;
 
-        room.hasRolled = false; // Reset lock
+        room.hasRolled = false;
         room.consecutiveSixes = 0;
         room.turnIndex = (room.turnIndex + 1) % room.players.length;
         const nextPlayer = room.players[room.turnIndex];
@@ -379,7 +379,6 @@ io.on('connection', (socket) => {
             let pawn = room.pawns[botColor][moveIndex];
             pawn.pos = (pawn.pos === -1) ? 0 : pawn.pos + dice;
 
-            // Kill detection for bot
             let killed = false;
             let killedColor = null;
             let killedIndex = null;
@@ -404,7 +403,8 @@ io.on('connection', (socket) => {
                 }
             }
 
-            let getsExtra = (dice === 6 || killed);
+            let reachedGoal = (pawn.pos === 56);
+            let getsExtra = (dice === 6 || killed || reachedGoal);
             if (!getsExtra) {
                 room.turnIndex = (room.turnIndex + 1) % room.players.length;
             }
