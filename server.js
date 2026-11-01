@@ -17,7 +17,6 @@ const BOT_NAMES = [
     "Manish_Yadav", "Kavita_Rathore", "Sachin_Gupta", "Ritu_Choudhary"
 ];
 
-const COLORS = ['red', 'green', 'yellow', 'blue'];
 const SAFE_STAR_INDICES = [0, 8, 13, 21, 26, 34, 39, 47];
 const START_INDEX = { red: 0, green: 13, yellow: 26, blue: 39 };
 
@@ -143,17 +142,27 @@ io.on('connection', (socket) => {
         }
     });
 
-    // Match Start Helper (Pawns & Colors Initialization)
+    // Clean Single startMatch Function (2-Player = Red & Yellow Only)
     function startMatch(playersList, count, entryFee) {
         const roomId = "room_" + Date.now();
 
-        // 4 Players ki 4-4 Gotiyan Initialize karein
-        const roomPawns = {
-            red:    [{ pos: -1 }, { pos: -1 }, { pos: -1 }, { pos: -1 }],
-            green:  [{ pos: -1 }, { pos: -1 }, { pos: -1 }, { pos: -1 }],
-            yellow: [{ pos: -1 }, { pos: -1 }, { pos: -1 }, { pos: -1 }],
-            blue:   [{ pos: -1 }, { pos: -1 }, { pos: -1 }, { pos: -1 }]
-        };
+        // 2 Player = Red vs Yellow (Classic Aamne-Saamne)
+        // 3 Player = Red, Green, Yellow
+        // 4 Player = Red, Green, Yellow, Blue
+        let activeColors = [];
+        if (count == 2) {
+            activeColors = ['red', 'yellow'];
+        } else if (count == 3) {
+            activeColors = ['red', 'green', 'yellow'];
+        } else {
+            activeColors = ['red', 'green', 'yellow', 'blue'];
+        }
+
+        // Sirf active rangon ki gotiyan banayein
+        const roomPawns = {};
+        activeColors.forEach(c => {
+            roomPawns[c] = [{ pos: -1 }, { pos: -1 }, { pos: -1 }, { pos: -1 }];
+        });
 
         activeRooms[roomId] = {
             roomId: roomId,
@@ -161,32 +170,33 @@ io.on('connection', (socket) => {
                 id: p.id,
                 user_id: p.user_id,
                 name: p.displayName,
-                color: COLORS[idx],
+                color: activeColors[idx],
                 isBot: p.isBot || false
             })),
             pawns: roomPawns,
+            activeColors: activeColors,
             turnIndex: 0,
             lastDice: 0,
             entryFee: entryFee,
             playersCount: count
         };
 
-        // Har player ko uska specific color aur match details bhejo
+        // Broadcast with Active Colors
         playersList.forEach((p, idx) => {
-            const assignedColor = COLORS[idx];
+            const assignedColor = activeColors[idx];
             if (!p.isBot && p.join) {
                 p.join(roomId);
                 p.emit('match_ready', {
                     roomId: roomId,
                     assignedColor: assignedColor,
-                    currentTurnColor: COLORS[0],
+                    activeColors: activeColors,
+                    currentTurnColor: activeColors[0],
                     currentTurnName: activeRooms[roomId].players[0].name,
                     players: activeRooms[roomId].players.map(pl => pl.name)
                 });
             }
         });
 
-        // Agar pehla player bot hai to dice roll karo
         if (activeRooms[roomId].players[0].isBot) {
             triggerBotTurn(roomId);
         }
@@ -212,7 +222,6 @@ io.on('connection', (socket) => {
             nextTurnId: currentTurnPlayer.user_id
         });
 
-        // Agar player Bot hai to auto move karega
         if (currentTurnPlayer.isBot) {
             setTimeout(() => {
                 handleBotMove(roomId, currentTurnPlayer.color, diceValue);
@@ -220,7 +229,7 @@ io.on('connection', (socket) => {
         }
     }
 
-    // 5. Pawn Movement Handler (Inside Connection Scope)
+    // 5. Pawn Movement Handler
     socket.on('move_pawn', (data) => {
         const { roomId, color, pawnIndex, diceValue } = data;
         const room = activeRooms[roomId];
@@ -233,7 +242,7 @@ io.on('connection', (socket) => {
             pawn.pos += diceValue;
         }
 
-        // Kill Detection (Agar safe star par na ho)
+        // Kill Detection
         let killed = false;
         let killedColor = null;
         let killedIndex = null;
@@ -241,14 +250,12 @@ io.on('connection', (socket) => {
         if (pawn.pos < 51) {
             let globalCell = (START_INDEX[color] + pawn.pos) % 52;
             if (!SAFE_STAR_INDICES.includes(globalCell)) {
-                // Check if any opponent pawn is here
-                for (let oppColor of COLORS) {
+                room.activeColors.forEach(oppColor => {
                     if (oppColor !== color) {
                         room.pawns[oppColor].forEach((oppPawn, oIdx) => {
                             if (oppPawn.pos >= 0 && oppPawn.pos < 51) {
                                 let oppGlobalCell = (START_INDEX[oppColor] + oppPawn.pos) % 52;
                                 if (oppGlobalCell === globalCell) {
-                                    // Kill Opponent!
                                     oppPawn.pos = -1;
                                     killed = true;
                                     killedColor = oppColor;
@@ -257,11 +264,10 @@ io.on('connection', (socket) => {
                             }
                         });
                     }
-                }
+                });
             }
         }
 
-        // 6 aane par ya goti kaatne par extra turn
         let getsExtraTurn = (diceValue === 6 || killed);
         if (!getsExtraTurn) {
             room.turnIndex = (room.turnIndex + 1) % room.players.length;
@@ -285,7 +291,7 @@ io.on('connection', (socket) => {
         }
     });
 
-    // 6. Skip Turn (Jab koi goti move na ho sake)
+    // 6. Skip Turn
     socket.on('skip_turn', (data) => {
         const room = activeRooms[data.roomId];
         if (!room) return;
@@ -317,7 +323,6 @@ io.on('connection', (socket) => {
         const room = activeRooms[roomId];
         if (!room) return;
 
-        // Bot selects first valid pawn
         let moveIndex = -1;
         room.pawns[botColor].forEach((p, idx) => {
             if (moveIndex !== -1) return;
@@ -326,16 +331,25 @@ io.on('connection', (socket) => {
         });
 
         if (moveIndex !== -1) {
-            // Trigger move
+            let pawn = room.pawns[botColor][moveIndex];
+            pawn.pos = (pawn.pos === -1) ? 0 : pawn.pos + dice;
+
+            let getsExtra = (dice === 6);
+            if (!getsExtra) {
+                room.turnIndex = (room.turnIndex + 1) % room.players.length;
+            }
+            const nextP = room.players[room.turnIndex];
+
             io.to(roomId).emit('pawn_moved', {
                 color: botColor,
                 pawnIndex: moveIndex,
-                newPos: (room.pawns[botColor][moveIndex].pos === -1) ? 0 : room.pawns[botColor][moveIndex].pos + dice,
-                nextTurnColor: (dice === 6) ? botColor : getNextColor(room),
-                nextTurnName: room.players[room.turnIndex].name
+                newPos: pawn.pos,
+                nextTurnColor: nextP.color,
+                nextTurnName: nextP.name
             });
+
+            if (nextP.isBot) triggerBotTurn(roomId);
         } else {
-            // Skip
             room.turnIndex = (room.turnIndex + 1) % room.players.length;
             const nextP = room.players[room.turnIndex];
             io.to(roomId).emit('pawn_moved', {
@@ -345,11 +359,6 @@ io.on('connection', (socket) => {
             });
             if (nextP.isBot) triggerBotTurn(roomId);
         }
-    }
-
-    function getNextColor(room) {
-        room.turnIndex = (room.turnIndex + 1) % room.players.length;
-        return room.players[room.turnIndex].color;
     }
 
     socket.on('disconnect', () => {
